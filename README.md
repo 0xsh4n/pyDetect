@@ -5,7 +5,7 @@ A Host Based Intrusion Detection System working with logs
 
 PyDetect is a real-time monitoring system for Apache and Nginx servers. It detects GET requests , identifies OWASP Top 10 vulnerabilities, and provides with alerts and statistics.
 
-![Dashboard Screenshot]()
+![Screenshot](demo.png)
 
 ## Features ✨
 
