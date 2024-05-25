@@ -1,0 +1,194 @@
+#! /usr/bin/python3
+import os
+import time
+import re
+
+log_pattern = r'^(\S+) (\S+) (\S+) \[([\w:/]+\s[+\-]\d{4})\] "(\S+) (\S+)\s*(\S*)" (\d{3}) (\d+)'
+
+# Function to parse log lines
+def parse_log(log_line):
+    match = re.match(log_pattern, log_line)
+    if match:
+        ip_address = match.group(1)
+        timestamp = match.group(4)
+        method = match.group(5)
+        path = match.group(6)
+        status_code = match.group(8)
+        response_size = match.group(9)
+        return ip_address, timestamp, method, path, status_code, response_size
+    else:
+        return None
+
+# Function to monitor log files for new requests
+def monitor_logs(log_file):
+    file_size = os.stat(log_file.name).st_size
+    
+    while True:
+        current_size = os.stat(log_file.name).st_size
+        
+        if current_size > file_size:
+            with open(log_file.name, "r") as file:
+                file.seek(file_size)
+                new_lines = file.readlines()
+                for line in new_lines:
+                    log_data = parse_log(line.strip())
+                    if log_data:
+                        ip_address, timestamp, method, path, status_code, response_size = log_data
+                        print("\n[!] New request detected \n")
+                        print(f"Ip Address: {ip_address}, Timestamp: {timestamp}, Method: {method}, Path: {path}, Status Code: {status_code}, Response Size: {response_size}")
+                        # Call OWASP Top 10 detection functions here
+                        detect_injection_attacks(path)
+                        detect_sensitive_data_exposure(path)
+                        detect_xss_attacks(path)
+                        detect_security_misconfigurations(path)
+                        detect_sensitive_data_exposure(path)
+                        detect_broken_authentication(path)
+                        detect_xml_external_entities(path)
+                        detect_insecure_deserialization(path)
+                        detect_insufficient_logging(path)
+            file_size = current_size
+        
+        time.sleep(1)
+
+def run_detection(log_file):
+    print(f"Monitoring log file: {log_file.name}")
+    monitor_logs(log_file)
+
+def display_version():
+    banner()
+    version = 'v1.0'
+    print(version)
+    print("This is the first version to be released.")
+
+def banner():
+    version = 'v1.0'
+    logo = """
+               _____         _                _   
+              |  __ \       | |              | |  
+ _ __   _   _ | |  | |  ___ | |_   ___   ___ | |_ 
+| '_ \ | | | || |  | | / _ \| __| / _ \ / __|| __|
+| |_) || |_| || |__| ||  __/| |_ |  __/| (__ | |_ 
+| .__/  \__, ||_____/  \___| \__| \___| \___| \__|
+| |      __/ |                                    
+|_|     |___/                                     
+
+    """ + version
+
+    print(logo)
+    print("\nWelcome to pyDetect - A Host-based Intrusion Detection System (IDS) specialized in Nginx and Apache access logs!\n")
+
+def about_project():
+    banner()
+    print("pyDetect is a project designed for Host-based Intrusion Detection System.\nIt specializes in monitoring Nginx and Apache access logs to identify potential intrusions.\nThis project is created by 3 students as part of a syllabus.\n")
+
+def about_us():
+    banner()
+    print("We are a group of students who are security enthusiasts, Currently pursuing B.E Computer Science and Engineering.\nWe are a team of 3 Students.")
+    print("\n 1. Ajmal Shan         [https://github.com/mr-sh4n]\n 2. Mohammed Safvan \n 3. Akshay Biju\n")
+
+def log_find():
+    file_name = input("Enter the path of Log File \nExample: APACHE Log File: /var/log/apache2/access.log \n         NGINX Log File: /var/log/nginx/access.log\n  Enter Path:")
+    log_file = open(file_name, 'r')
+    return log_file
+
+def detect_injection_attacks(path):
+    injection_keywords = ["SELECT", "UNION", "DROP", "DELETE", "UPDATE", "INSERT", "EXEC", "OR"]
+    for keyword in injection_keywords:
+        if keyword in path.upper():
+            print("\n[!] Potential injection attack detected in path:", path)
+            return True
+    return False
+
+def detect_sensitive_data_exposure(path):
+    sensitive_data_keywords = ["PASSWORD", "CREDENTIALS", "SECRET", "TOKEN", "KEY", "SSN", "CREDIT_CARD"]
+    for keyword in sensitive_data_keywords:
+        if keyword in path.upper():
+            print("\n[!] Potential sensitive data exposure detected in path:", path)
+            return True
+    return False
+
+def detect_xss_attacks(path):
+    xss_payloads = ["<script>", "javascript:", "onerror=", "onload=", "alert(", "<img src=x onerror=alert(1)>"]
+    for payload in xss_payloads:
+        if payload in path.lower():
+            print("\n[!] Potential XSS attack detected in path:", path)
+            return True
+    return False
+
+def detect_security_misconfigurations(path):
+    common_misconfigurations = [".git", ".svn", ".htaccess", "WEB-INF", "phpinfo.php"]
+    for misconfiguration in common_misconfigurations:
+        if misconfiguration in path:
+            print("\n[!] Potential security misconfiguration detected in path:", path)
+            return True
+    return False
+
+def detect_sensitive_data_exposure(path):
+    sensitive_data_keywords = ["PASSWORD", "CREDENTIALS", "SECRET", "TOKEN", "KEY", "SSN", "CREDIT_CARD"]
+    for keyword in sensitive_data_keywords:
+        if keyword in path.upper():
+            print("\n[!] Potential sensitive data exposure detected in path:", path)
+            return True
+    return False
+
+def detect_broken_authentication(path):
+    authentication_endpoints = ["login", "logout", "session", "auth", "authenticate"]
+    for endpoint in authentication_endpoints:
+        if endpoint in path.lower():
+            print("\n[!] Potential broken authentication detected in path:", path)
+            return True
+    return False
+
+def detect_sensitive_data_exposure(path):
+    sensitive_data_keywords = ["PASSWORD", "CREDENTIALS", "SECRET", "TOKEN", "KEY", "SSN", "CREDIT_CARD"]
+    for keyword in sensitive_data_keywords:
+        if keyword in path.upper():
+            print("\n[!] Potential sensitive data exposure detected in path:", path)
+            return True
+    return False
+
+def detect_xml_external_entities(path):
+    if "DOCTYPE" in path.upper() or "ENTITY" in path.upper():
+        print("\n[!] Potential XML external entity (XXE) attack detected in path:", path)
+        return True
+    return False
+
+def detect_security_misconfigurations(path):
+    common_misconfigurations = [".git", ".svn", ".htaccess", "WEB-INF", "phpinfo.php"]
+    for misconfiguration in common_misconfigurations:
+        if misconfiguration in path:
+            print("\n[!] Potential security misconfiguration detected in path:", path)
+            return True
+    return False
+
+def detect_insecure_deserialization(path):
+    if "serialize" in path.lower() or "deserialize" in path.lower():
+        print("\n[!] Potential insecure deserialization detected in path:", path)
+        return True
+    return False
+
+def detect_insufficient_logging(path):
+    if "log" in path.lower() or "logger" in path.lower():
+        print("\n[!] Potential insufficient logging detected in path:", path)
+        return True
+    return False
+
+if __name__ == "__main__":
+    banner()
+    while True:
+        choice = input("\n [1] Monitor Log File\n [2] Display Version\n [3] About Us\n [4] About Project\n [5] Exit\n\nEnter Any Options: ")
+
+        if choice == '1':
+            log_file = log_find()
+            run_detection(log_file)
+        elif choice == '2':
+            display_version()
+        elif choice == '3':
+            about_us()
+        elif choice == '4':
+            about_project()
+        elif choice == '5':
+            print("Exiting pyDetect.")
+            break
+        else:
+            print("[#] Invalid Option! Please try again.")
