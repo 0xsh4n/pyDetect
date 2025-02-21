@@ -1,68 +1,396 @@
-#! /usr/bin/python3
+#!/usr/bin/python3
 import os
 import time
 import re
+from datetime import datetime
+from typing import NamedTuple, Optional, Dict, List, Tuple
+from dataclasses import dataclass
+from enum import Enum
+import logging
+from collections import defaultdict
+import json
+import signal
+import sys
+import json
+from datetime import datetime, timedelta
+import ipaddress
+from urllib.parse import urlparse
+import socket
 
-log_pattern = r'^(\S+) (\S+) (\S+) \[([\w:/]+\s[+\-]\d{4})\] "(\S+) (\S+)\s*(\S*)" (\d{3}) (\d+)'
+class HttpMethod(Enum):
+    GET = "GET"
+    POST = "POST"
+    PUT = "PUT"
+    DELETE = "DELETE"
+    HEAD = "HEAD"
+    OPTIONS = "OPTIONS"
+    PATCH = "PATCH"
+    
+    @classmethod
+    def from_string(cls, method: str) -> 'HttpMethod':
+        try:
+            return cls(method.upper())
+        except ValueError:
+            return None
 
-# Function to parse log lines
-def parse_log(log_line):
-    match = re.match(log_pattern, log_line)
-    if match:
-        ip_address = match.group(1)
-        timestamp = match.group(4)
-        method = match.group(5)
-        path = match.group(6)
-        status_code = match.group(8)
-        response_size = match.group(9)
-        return ip_address, timestamp, method, path, status_code, response_size
-    else:
+@dataclass
+class LogEntry:
+    ip_address: str
+    timestamp: str
+    method: str
+    path: str
+    status_code: str
+    response_size: str
+    raw_line: str
+
+@dataclass
+class DashboardMetrics:
+    """Class to hold dashboard metrics"""
+    total_requests: int = 0
+    unique_ips: int = 0
+    total_threats: int = 0
+    avg_response_size: float = 0
+    requests_per_minute: float = 0
+    threat_distribution: Dict = None
+    status_distribution: Dict = None
+    method_distribution: Dict = None
+    top_ips: List[Dict] = None
+    top_paths: List[Dict] = None
+    recent_threats: List[Dict] = None
+    geographical_distribution: Dict = None
+
+class SecurityDetector:
+    def __init__(self):
+        # Load attack signatures from JSON files
+        self.signatures = self._load_signatures()
+        self.attack_stats = defaultdict(int)
+        
+    def _load_signatures(self) -> Dict:
+        """Load attack signatures from a JSON file or use defaults"""
+        default_signatures = {
+            "injection": {
+                "patterns": ["SELECT", "UNION", "DROP", "DELETE", "UPDATE", "INSERT", "EXEC", "'OR'", "/*", "*/", "--"],
+                "risk_level": "high"
+            },
+            "xss": {
+                "patterns": ["<script>", "javascript:", "onerror=", "onload=", "alert(", "<img", "<iframe"],
+                "risk_level": "high"
+            },
+            "lfi": {
+                "patterns": ["../", "..\\", "/etc/passwd", "c:\\windows\\", "file://"],
+                "risk_level": "critical"
+            },
+            "sensitive_data": {
+                "patterns": ["password", "pwd", "secret", "token", "key", "ssn", "credit_card"],
+                "risk_level": "medium"
+            },
+            "security_misconfig": {
+                "patterns": [".git", ".env", ".svn", ".htaccess", "WEB-INF", "phpinfo.php"],
+                "risk_level": "medium"
+            },
+            "auth_endpoints": {
+                "patterns": ["login", "logout", "session", "auth", "authenticate"],
+                "risk_level": "medium"
+            },
+            "server_info": {
+                "patterns": ["phpinfo", "server-status", "server-info"],
+                "risk_level": "low"
+            }
+        }
+        
+        try:
+            with open('signatures.json', 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return default_signatures
+
+    def analyze_request(self, entry: LogEntry) -> List[Dict]:
+        """Analyze a log entry for potential security threats"""
+        threats = []
+        
+        # Normalize the path for consistent checking
+        normalized_path = entry.path.lower()
+        
+        for attack_type, signature in self.signatures.items():
+            for pattern in signature["patterns"]:
+                if pattern.lower() in normalized_path:
+                    threat = {
+                        "type": attack_type,
+                        "pattern": pattern,
+                        "risk_level": signature["risk_level"],
+                        "timestamp": entry.timestamp,
+                        "ip": entry.ip_address,
+                        "path": entry.path
+                    }
+                    threats.append(threat)
+                    self.attack_stats[attack_type] += 1
+        
+        return threats
+
+class LogMonitor:
+    def __init__(self, log_pattern: str = None):
+        self.log_pattern = log_pattern or r'^(\S+) (\S+) (\S+) \[([\w:/]+\s[+\-]\d{4})\] "(\S+) (\S+)\s*(\S*)" (\d{3}) (\d+)'
+        self.pattern = re.compile(self.log_pattern)
+        self.detector = SecurityDetector()
+        self.logger = logging.getLogger(__name__)
+        self.stats = defaultdict(int)
+        self.running = True
+        self.metrics = DashboardMetrics()
+        self.start_time = datetime.now()
+        self.request_times = []
+        self.ip_locations = {}
+        
+        # Setup logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler('ids.log'),
+                logging.StreamHandler()
+            ]
+        )
+        
+        # Setup signal handlers
+        signal.signal(signal.SIGINT, self.handle_shutdown)
+        signal.signal(signal.SIGTERM, self.handle_shutdown)
+
+    def handle_shutdown(self, signum, frame):
+        """Handle graceful shutdown"""
+        self.running = False
+        self.logger.info("Shutting down...")
+        self.print_statistics()
+        sys.exit(0)
+
+    def parse_log_line(self, line: str) -> Optional[LogEntry]:
+        """Parse a single log line"""
+        match = self.pattern.match(line.strip())
+        if match:
+            return LogEntry(
+                ip_address=match.group(1),
+                timestamp=match.group(4),
+                method=match.group(5),
+                path=match.group(6),
+                status_code=match.group(8),
+                response_size=match.group(9),
+                raw_line=line
+            )
         return None
 
-# Function to monitor log files for new requests
-def monitor_logs(log_file):
-    file_size = os.stat(log_file.name).st_size
+    def monitor_log_file(self, log_file_path: str):
+        """Monitor log file for new entries"""
+        try:
+            with open(log_file_path, 'r') as log_file:
+                # Go to end of file
+                log_file.seek(0, 2)
+                
+                while self.running:
+                    line = log_file.readline()
+                    if line:
+                        entry = self.parse_log_line(line)
+                        if entry:
+                            self.process_log_entry(entry)
+                    else:
+                        time.sleep(0.1)
+                        
+        except FileNotFoundError:
+            self.logger.error(f"Log file not found: {log_file_path}")
+        except Exception as e:
+            self.logger.error(f"Error monitoring log file: {e}")
+
+    def process_log_entry(self, entry: LogEntry):
+        """Process a single log entry"""
+        self.stats['total_requests'] += 1
+        
+        # Analyze for security threats
+        threats = self.detector.analyze_request(entry)
+        
+        if threats:
+            for threat in threats:
+                self.log_threat(threat)
+                
+        # Update statistics
+        self.stats['status_codes'][entry.status_code] += 1
+        self.stats['methods'][entry.method] += 1
+        self.stats['ips'][entry.ip_address] += 1
+
+    def log_threat(self, threat: Dict):
+        """Log detected security threats"""
+        risk_colors = {
+            'critical': '\033[91m',  # Red
+            'high': '\033[93m',      # Yellow
+            'medium': '\033[94m',    # Blue
+            'low': '\033[92m'        # Green
+        }
+        
+        color = risk_colors.get(threat['risk_level'], '')
+        reset = '\033[0m'
+        
+        message = (
+            f"\n{color}[!] Security Threat Detected{reset}\n"
+            f"Type: {threat['type']}\n"
+            f"Risk Level: {threat['risk_level']}\n"
+            f"IP: {threat['ip']}\n"
+            f"Path: {threat['path']}\n"
+            f"Pattern Matched: {threat['pattern']}\n"
+            f"Timestamp: {threat['timestamp']}\n"
+        )
+        
+        print(message)
+        self.logger.warning(message)
+
+    def print_statistics(self):
+        """Print monitoring statistics"""
+        print("\n=== Monitoring Statistics ===")
+        print(f"Total Requests: {self.stats['total_requests']}")
+        print("\nAttack Statistics:")
+        for attack_type, count in self.detector.attack_stats.items():
+            print(f"- {attack_type}: {count}")
+        print("\nStatus Code Distribution:")
+        for code, count in self.stats['status_codes'].items():
+            print(f"- {code}: {count}")
+        def get_ip_location(self, ip: str) -> Dict:
+        """Get IP location info (mock implementation - replace with actual IP geolocation service)"""
+        try:
+            if ip in self.ip_locations:
+                return self.ip_locations[ip]
+            
+            # Mock location data - replace with actual API call
+            location = {
+                "country": "Unknown",
+                "city": "Unknown",
+                "latitude": 0,
+                "longitude": 0
+            }
+            
+            # Cache the result
+            self.ip_locations[ip] = location
+            return location
+        except Exception:
+            return {"country": "Unknown", "city": "Unknown", "latitude": 0, "longitude": 0}
+
+    def generate_dashboard_data(self) -> Dict:
+        """Generate JSON data for dashboard"""
+        current_time = datetime.now()
+        elapsed_minutes = (current_time - self.start_time).total_seconds() / 60
+
+        # Calculate basic metrics
+        metrics = {
+            "general_stats": {
+                "total_requests": self.stats['total_requests'],
+                "unique_ips": len(self.stats['ips']),
+                "total_threats": sum(self.detector.attack_stats.values()),
+                "monitoring_duration": str(timedelta(minutes=elapsed_minutes)),
+                "requests_per_minute": round(self.stats['total_requests'] / max(elapsed_minutes, 1), 2)
+            },
+            
+            "threat_metrics": {
+                "threat_count": dict(self.detector.attack_stats),
+                "risk_distribution": {
+                    "critical": sum(1 for t in self.recent_threats if t["risk_level"] == "critical"),
+                    "high": sum(1 for t in self.recent_threats if t["risk_level"] == "high"),
+                    "medium": sum(1 for t in self.recent_threats if t["risk_level"] == "medium"),
+                    "low": sum(1 for t in self.recent_threats if t["risk_level"] == "low")
+                },
+                "recent_threats": self.recent_threats[-10:]  # Last 10 threats
+            },
+            
+            "traffic_analysis": {
+                "status_codes": dict(self.stats['status_codes']),
+                "http_methods": dict(self.stats['methods']),
+                "top_ips": [
+                    {"ip": ip, "count": count, "location": self.get_ip_location(ip)}
+                    for ip, count in sorted(self.stats['ips'].items(), key=lambda x: x[1], reverse=True)[:10]
+                ],
+                "geographical_distribution": {
+                    "countries": {},
+                    "cities": {}
+                }
+            },
+            
+            "request_patterns": {
+                "common_paths": dict(sorted(self.stats.get('paths', {}).items(), key=lambda x: x[1], reverse=True)[:10]),
+                "time_distribution": {
+                    "hourly": self.calculate_time_distribution()
+                }
+            },
+            
+            "system_health": {
+                "last_update": current_time.isoformat(),
+                "monitoring_status": "active" if self.running else "stopped",
+                "error_rate": self.calculate_error_rate()
+            }
+        }
+
+        # Add geographical distribution
+        for ip in self.stats['ips']:
+            location = self.get_ip_location(ip)
+            country = location["country"]
+            city = location["city"]
+            
+            metrics["traffic_analysis"]["geographical_distribution"]["countries"][country] = \
+                metrics["traffic_analysis"]["geographical_distribution"]["countries"].get(country, 0) + 1
+            
+            metrics["traffic_analysis"]["geographical_distribution"]["cities"][city] = \
+                metrics["traffic_analysis"]["geographical_distribution"]["cities"].get(city, 0) + 1
+
+        return metrics
+
+    def calculate_time_distribution(self) -> Dict:
+        """Calculate request distribution by hour"""
+        hour_distribution = defaultdict(int)
+        current_hour = datetime.now().hour
+        
+        # Create 24-hour distribution
+        for hour in range(24):
+            hour_distribution[hour] = self.stats.get(f'hour_{hour}', 0)
+            
+        return dict(hour_distribution)
+
+    def calculate_error_rate(self) -> float:
+        """Calculate error rate based on status codes"""
+        total_requests = sum(self.stats['status_codes'].values())
+        if total_requests == 0:
+            return 0.0
+            
+        error_requests = sum(
+            count for status, count in self.stats['status_codes'].items()
+            if status.startswith(('4', '5'))
+        )
+        
+        return round((error_requests / total_requests) * 100, 2)
+
+    def start_json_output_server(self, port: int = 8080):
+        """Start a simple HTTP server to serve JSON metrics"""
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        import json
+        
+        class MetricsHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == '/metrics':
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    
+                    # Get metrics from the monitor instance
+                    metrics = self.server.monitor.generate_dashboard_data()
+                    
+                    self.wfile.write(json.dumps(metrics).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+        
+        server = HTTPServer(('localhost', port), MetricsHandler)
+        server.monitor = self
+        
+        print(f"Starting metrics server on port {port}")
+        server.serve_forever()
+class PyDetect:
+    VERSION = "v2.0"
     
-    while True:
-        current_size = os.stat(log_file.name).st_size
-        
-        if current_size > file_size:
-            with open(log_file.name, "r") as file:
-                file.seek(file_size)
-                new_lines = file.readlines()
-                for line in new_lines:
-                    log_data = parse_log(line.strip())
-                    if log_data:
-                        ip_address, timestamp, method, path, status_code, response_size = log_data
-                        print("\n[!] New request detected \n")
-                        print(f"Ip Address: {ip_address}, Timestamp: {timestamp}, Method: {method}, Path: {path}, Status Code: {status_code}, Response Size: {response_size}")
-                        # Call OWASP Top 10 detection functions here
-                        detect_injection_attacks(path)
-                        detect_sensitive_data_exposure(path)
-                        detect_xss_attacks(path)
-                        detect_security_misconfigurations(path)
-                        detect_sensitive_data_exposure(path)
-                        detect_broken_authentication(path)
-                        detect_xml_external_entities(path)
-                        detect_insecure_deserialization(path)
-                        detect_insufficient_logging(path)
-            file_size = current_size
-        
-        time.sleep(1)
-
-def run_detection(log_file):
-    print(f"Monitoring log file: {log_file.name}")
-    monitor_logs(log_file)
-
-def display_version():
-    banner()
-    version = 'v1.0'
-    print(version)
-    print("This is the first version to be released.")
-
-def banner():
-    version = 'v1.0'
-    logo = """
+    @staticmethod
+    def display_banner():
+        logo = f"""
                _____         _                _   
               |  __ \       | |              | |  
  _ __   _   _ | |  | |  ___ | |_   ___   ___ | |_ 
@@ -72,123 +400,76 @@ def banner():
 | |      __/ |                                    
 |_|     |___/                                     
 
-    """ + version
+        """ + PyDetect.VERSION
+        
+        print(logo)
+        print("\nWelcome to pyDetect - A Host-based Intrusion Detection System (IDS)")
+        print("Specialized in Nginx and Apache access logs monitoring\n")
 
-    print(logo)
-    print("\nWelcome to pyDetect - A Host-based Intrusion Detection System (IDS) specialized in Nginx and Apache access logs!\n")
+    @staticmethod
+    def run():
+        monitor = None
+        try:
+            while True:
+                PyDetect.display_banner()
+                choice = input(
+                    "\n [1] Monitor Log File"
+                    "\n [2] Display Version"
+                    "\n [3] About Us"
+                    "\n [4] About Project"
+                    "\n [5] Start Dashboard Server"  # New option
+                    "\n [6] Exit"
+                    "\n\nEnter Option: "
+                )
 
-def about_project():
-    banner()
-    print("pyDetect is a project designed for Host-based Intrusion Detection System.\nIt specializes in monitoring Nginx and Apache access logs to identify potential intrusions.\nThis project is created by 3 students as part of a syllabus.\n")
+                if choice == '1':
+                    log_path = input("\nEnter log file path"
+                                   "\n(e.g., /var/log/apache2/access.log or /var/log/nginx/access.log): ")
+                    monitor = LogMonitor()
+                    # Start monitoring in a separate thread
+                    import threading
+                    monitoring_thread = threading.Thread(target=monitor.monitor_log_file, args=(log_path,))
+                    monitoring_thread.daemon = True
+                    monitoring_thread.start()
+                    print(f"Monitoring started for {log_path}")
+                
+                elif choice == '5':
+                    if monitor:
+                        try:
+                            port = int(input("Enter port number for dashboard server (default: 8080): ") or 8080)
+                            monitor.start_json_output_server(port)
+                        except ValueError:
+                            print("Invalid port number. Using default port 8080.")
+                            monitor.start_json_output_server(8080)
+                    else:
+                        print("Please start monitoring first (Option 1)")
 
-def about_us():
-    banner()
-    print("We are a group of students who are security enthusiasts, Currently pursuing B.E Computer Science and Engineering.\nWe are a team of 3 Students.")
-    print("\n 1. Ajmal Shan         [https://github.com/mr-sh4n]\n 2. Mohammed Safvan \n 3. Akshay Biju\n")
+        except KeyboardInterrupt:
+            print("\nReceived interrupt signal. Shutting down...")
+            if monitor:
+                monitor.running = False
 
-def log_find():
-    file_name = input("Enter the path of Log File \nExample: APACHE Log File: /var/log/apache2/access.log \n         NGINX Log File: /var/log/nginx/access.log\n  Enter Path:")
-    log_file = open(file_name, 'r')
-    return log_file
+    @staticmethod
+    def about_project():
+        print("\nPyDetect v2.0 - Advanced Host-based Intrusion Detection System")
+        print("\nFeatures:")
+        print("- Real-time monitoring of Nginx and Apache access logs")
+        print("- Detection of OWASP Top 10 security threats")
+        print("- Customizable attack signatures")
+        print("- Detailed threat logging and statistics")
+        print("- Color-coded risk levels")
+        print("- Graceful shutdown handling")
 
-def detect_injection_attacks(path):
-    injection_keywords = ["SELECT", "UNION", "DROP", "DELETE", "UPDATE", "INSERT", "EXEC", "OR"]
-    for keyword in injection_keywords:
-        if keyword in path.upper():
-            print("\n[!] Potential injection attack detected in path:", path)
-            return True
-    return False
-
-def detect_sensitive_data_exposure(path):
-    sensitive_data_keywords = ["PASSWORD", "CREDENTIALS", "SECRET", "TOKEN", "KEY", "SSN", "CREDIT_CARD"]
-    for keyword in sensitive_data_keywords:
-        if keyword in path.upper():
-            print("\n[!] Potential sensitive data exposure detected in path:", path)
-            return True
-    return False
-
-def detect_xss_attacks(path):
-    xss_payloads = ["<script>", "javascript:", "onerror=", "onload=", "alert(", "<img src=x onerror=alert(1)>"]
-    for payload in xss_payloads:
-        if payload in path.lower():
-            print("\n[!] Potential XSS attack detected in path:", path)
-            return True
-    return False
-
-def detect_security_misconfigurations(path):
-    common_misconfigurations = [".git", ".svn", ".htaccess", "WEB-INF", "phpinfo.php"]
-    for misconfiguration in common_misconfigurations:
-        if misconfiguration in path:
-            print("\n[!] Potential security misconfiguration detected in path:", path)
-            return True
-    return False
-
-def detect_sensitive_data_exposure(path):
-    sensitive_data_keywords = ["PASSWORD", "CREDENTIALS", "SECRET", "TOKEN", "KEY", "SSN", "CREDIT_CARD"]
-    for keyword in sensitive_data_keywords:
-        if keyword in path.upper():
-            print("\n[!] Potential sensitive data exposure detected in path:", path)
-            return True
-    return False
-
-def detect_broken_authentication(path):
-    authentication_endpoints = ["login", "logout", "session", "auth", "authenticate"]
-    for endpoint in authentication_endpoints:
-        if endpoint in path.lower():
-            print("\n[!] Potential broken authentication detected in path:", path)
-            return True
-    return False
-
-def detect_sensitive_data_exposure(path):
-    sensitive_data_keywords = ["PASSWORD", "CREDENTIALS", "SECRET", "TOKEN", "KEY", "SSN", "CREDIT_CARD"]
-    for keyword in sensitive_data_keywords:
-        if keyword in path.upper():
-            print("\n[!] Potential sensitive data exposure detected in path:", path)
-            return True
-    return False
-
-def detect_xml_external_entities(path):
-    if "DOCTYPE" in path.upper() or "ENTITY" in path.upper():
-        print("\n[!] Potential XML external entity (XXE) attack detected in path:", path)
-        return True
-    return False
-
-def detect_security_misconfigurations(path):
-    common_misconfigurations = [".git", ".svn", ".htaccess", "WEB-INF", "phpinfo.php"]
-    for misconfiguration in common_misconfigurations:
-        if misconfiguration in path:
-            print("\n[!] Potential security misconfiguration detected in path:", path)
-            return True
-    return False
-
-def detect_insecure_deserialization(path):
-    if "serialize" in path.lower() or "deserialize" in path.lower():
-        print("\n[!] Potential insecure deserialization detected in path:", path)
-        return True
-    return False
-
-def detect_insufficient_logging(path):
-    if "log" in path.lower() or "logger" in path.lower():
-        print("\n[!] Potential insufficient logging detected in path:", path)
-        return True
-    return False
+    @staticmethod
+    def about_us():
+        print("\ Author:")
+        print(" 1. Ajmal Shan         [https://github.com/0xsh4n]")
+        print("\nEnhanced Version Features:")
+        print("- Improved threat detection")
+        print("- Better error handling")
+        print("- Enhanced logging")
+        print("- Statistical analysis")
+        print("- Customizable signatures")
 
 if __name__ == "__main__":
-    banner()
-    while True:
-        choice = input("\n [1] Monitor Log File\n [2] Display Version\n [3] About Us\n [4] About Project\n [5] Exit\n\nEnter Any Options: ")
-
-        if choice == '1':
-            log_file = log_find()
-            run_detection(log_file)
-        elif choice == '2':
-            display_version()
-        elif choice == '3':
-            about_us()
-        elif choice == '4':
-            about_project()
-        elif choice == '5':
-            print("Exiting pyDetect.")
-            break
-        else:
-            print("[#] Invalid Option! Please try again.")
+    PyDetect.run()
