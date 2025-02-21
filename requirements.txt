@@ -1,0 +1,32 @@
+# Core dependencies
+python-dateutil>=2.8.2
+pytz>=2023.3
+
+# IP Handling and Geolocation
+ipaddress>=1.0.23
+geoip2>=4.7.0      # For IP geolocation (optional - if using MaxMind GeoIP)
+
+# Logging and Monitoring
+colorlog>=6.7.0    # For colored console output
+watchdog>=3.0.0    # For efficient file monitoring
+
+# Data Processing
+pandas>=2.0.0      # For data analysis and statistics
+numpy>=1.24.0      # Required by pandas
+
+# Web Server
+aiohttp>=3.8.5     # For async HTTP server
+cors>=1.0.1        # For CORS support
+
+# Security
+cryptography>=41.0.0  # For handling sensitive data
+pyyaml>=6.0.1        # For config file parsing
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Development
+black>=23.7.0      # Code formatting
+flake8>=6.1.0      # Code linting
+mypy>=1.5.1        # Type checking
